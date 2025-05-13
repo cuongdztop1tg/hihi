@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import gymnasium as gym  # Đảm bảo đã import gymnasium
 import os  # Đảm bảo đã import os
 from torch.utils.tensorboard import SummaryWriter  # Đảm bảo đã import SummaryWriter
+import matplotlib.pyplot as plt
 from envwrapper import EnvWrapper
 from model import ActorCritic
 from agent import A2C
@@ -61,160 +62,185 @@ def train(
     score_history = []
     avg_score_history = []
     best_avg_score = -np.inf
+    try:
+        for episode in range(n_episodes):
+            # --- Thu thập dữ liệu từ một episode (Rollout) ---
+            # Sử dụng list để lưu trữ vì không biết trước độ dài episode
+            states_list = []
+            actions_list = []
+            action_probs_list = []  # Vẫn thu thập nhưng không dùng cho A2C learn
+            state_values_list = []
+            rewards_list = []
+            terminated = False
+            truncated = False
 
-    for episode in range(n_episodes):
-        # --- Thu thập dữ liệu từ một episode (Rollout) ---
-        # Sử dụng list để lưu trữ vì không biết trước độ dài episode
-        states_list = []
-        actions_list = []
-        action_probs_list = []  # Vẫn thu thập nhưng không dùng cho A2C learn
-        state_values_list = []
-        rewards_list = []
-        terminated = False
-        truncated = False
+            state, _ = env.reset()
+            current_step = 0
 
-        state, _ = env.reset()
-        current_step = 0
+            while not terminated and not truncated and current_step < max_steps:
+                state_tensor = torch.tensor(
+                    np.expand_dims(state, axis=0), dtype=torch.float32, device=device
+                )
+                # Lấy action, log_prob, value từ mô hình hiện tại
+                with torch.no_grad():  # Không cần tính gradient khi thu thập dữ liệu
+                    action, action_prob, state_value = model.forward(state_tensor)
 
-        while not terminated and not truncated and current_step < max_steps:
-            state_tensor = torch.tensor(
-                np.expand_dims(state, axis=0), dtype=torch.float32, device=device
+                action_np = action.cpu().numpy()[0]
+                action_prob_np = action_prob.cpu().numpy()  # Log probability
+                state_value_np = state_value.cpu().numpy()
+
+                next_state, reward, terminated, truncated, _ = env.step(action_np)
+
+                # Lưu trữ dữ liệu của bước này
+                states_list.append(state)
+                actions_list.append(action_np)
+                action_probs_list.append(action_prob_np)
+                state_values_list.append(state_value_np)
+                rewards_list.append(reward)
+
+                state = next_state
+                current_step += 1
+            # print(current_step)/
+            # Độ dài thực tế của episode
+            step_cnt = len(rewards_list)
+
+            # Nếu episode kết thúc sớm, không có gì để làm thêm
+            if step_cnt == 0:
+                print(
+                    f"[Episode {episode + 1:4d}/{n_episodes}] Skipped - Episode ended immediately."
+                )
+                continue
+
+            # --- Xử lý dữ liệu thu thập được ---
+            b_states = np.array(states_list, dtype=np.float32)
+            b_actions = np.array(actions_list, dtype=np.float32)
+            # b_action_probs_np = np.array(action_probs_list, dtype=np.float32) # Không cần cho A2C learn
+            b_state_values_np = np.array(state_values_list, dtype=np.float32)
+            b_rewards_np = np.array(rewards_list, dtype=np.float32)
+
+            # Chuyển đổi sang tensor
+            b_states = torch.from_numpy(b_states).to(device)
+            b_actions = torch.from_numpy(b_actions).to(device)
+            b_state_values = torch.from_numpy(b_state_values_np).to(
+                device
+            )  # Cần để tính advantage
+
+            # --- Tính toán Returns và Advantages ---
+            b_returns_np = calculate_discounted_returns(b_rewards_np, discount_factor)
+            b_returns = torch.from_numpy(b_returns_np.copy()).to(
+                device, dtype=torch.float32
+            )  # Chuyển returns sang tensor
+
+            # Tính advantages: A(s, a) = G_t - V(s_t)
+            # V(s_t) được lấy từ lúc thu thập dữ liệu (dùng mô hình cũ hơn một chút so với lúc cập nhật)
+            b_advantages = b_returns - b_state_values
+
+            # Chuẩn hóa advantages (quan trọng cho sự ổn định của A2C/PPO)
+            b_advantages = (b_advantages - b_advantages.mean()) / (
+                b_advantages.std() + 1e-8
             )
-            # Lấy action, log_prob, value từ mô hình hiện tại
-            with torch.no_grad():  # Không cần tính gradient khi thu thập dữ liệu
-                action, action_prob, state_value = model.forward(state_tensor)
+            # Đảm bảo advantages không yêu cầu gradient vì chúng được coi là mục tiêu (target)
+            b_advantages = b_advantages.detach()
 
-            action_np = action.cpu().numpy()[0]
-            action_prob_np = action_prob.cpu().numpy()  # Log probability
-            state_value_np = state_value.cpu().numpy()
+            # Chuẩn hóa returns (thường cũng tốt cho Critic loss)
+            b_returns = (b_returns - b_returns.mean()) / (b_returns.std() + 1e-8)
+            b_returns = b_returns.detach()  # Returns cũng là target
 
-            next_state, reward, terminated, truncated, _ = env.step(action_np)
+            # --- Cập nhật tham số bằng A2C ---
+            # Chỉ truyền những gì A2C.learn cần
+            loss, actor_loss, critic_loss, entropy = agent.learn(
+                b_states,
+                b_actions,
+                # b_action_probs, # LOẠI BỎ: A2C không cần log probs cũ
+                b_returns,
+                b_advantages,
+            )
 
-            # Lưu trữ dữ liệu của bước này
-            states_list.append(state)
-            actions_list.append(action_np)
-            action_probs_list.append(action_prob_np)
-            state_values_list.append(state_value_np)
-            rewards_list.append(reward)
+            # --- Logging và In kết quả ---
+            total_reward = b_rewards_np.sum()
 
-            state = next_state
-            current_step += 1
-        # print(current_step)/
-        # Độ dài thực tế của episode
-        step_cnt = len(rewards_list)
+            score_history.append(total_reward)
+            avg_score = np.mean(score_history[-100:])
+            avg_score_history.append(avg_score)
 
-        # Nếu episode kết thúc sớm, không có gì để làm thêm
-        if step_cnt == 0:
+            if avg_score > best_avg_score:
+                best_avg_score = avg_score
+                ckpt_path = f"./model_a2c_test/best_a2c.pt"
+                print(f"Saving checkpoint to {ckpt_path}... ", flush=True)
+                torch.save(
+                    {
+                        "episode": episode + 1,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": agent.optimizer.state_dict(),  # Lưu cả optimizer state
+                        "loss": loss,
+                    },
+                    ckpt_path,
+                )
+
             print(
-                f"[Episode {episode + 1:4d}/{n_episodes}] Skipped - Episode ended immediately."
-            )
-            continue
-
-        # --- Xử lý dữ liệu thu thập được ---
-        b_states = np.array(states_list, dtype=np.float32)
-        b_actions = np.array(actions_list, dtype=np.float32)
-        # b_action_probs_np = np.array(action_probs_list, dtype=np.float32) # Không cần cho A2C learn
-        b_state_values_np = np.array(state_values_list, dtype=np.float32)
-        b_rewards_np = np.array(rewards_list, dtype=np.float32)
-
-        # Chuyển đổi sang tensor
-        b_states = torch.from_numpy(b_states).to(device)
-        b_actions = torch.from_numpy(b_actions).to(device)
-        b_state_values = torch.from_numpy(b_state_values_np).to(
-            device
-        )  # Cần để tính advantage
-
-        # --- Tính toán Returns và Advantages ---
-        b_returns_np = calculate_discounted_returns(b_rewards_np, discount_factor)
-        b_returns = torch.from_numpy(b_returns_np.copy()).to(
-            device, dtype=torch.float32
-        )  # Chuyển returns sang tensor
-
-        # Tính advantages: A(s, a) = G_t - V(s_t)
-        # V(s_t) được lấy từ lúc thu thập dữ liệu (dùng mô hình cũ hơn một chút so với lúc cập nhật)
-        b_advantages = b_returns - b_state_values
-
-        # Chuẩn hóa advantages (quan trọng cho sự ổn định của A2C/PPO)
-        b_advantages = (b_advantages - b_advantages.mean()) / (
-            b_advantages.std() + 1e-8
-        )
-        # Đảm bảo advantages không yêu cầu gradient vì chúng được coi là mục tiêu (target)
-        b_advantages = b_advantages.detach()
-
-        # Chuẩn hóa returns (thường cũng tốt cho Critic loss)
-        b_returns = (b_returns - b_returns.mean()) / (b_returns.std() + 1e-8)
-        b_returns = b_returns.detach()  # Returns cũng là target
-
-        # --- Cập nhật tham số bằng A2C ---
-        # Chỉ truyền những gì A2C.learn cần
-        loss, actor_loss, critic_loss, entropy = agent.learn(
-            b_states,
-            b_actions,
-            # b_action_probs, # LOẠI BỎ: A2C không cần log probs cũ
-            b_returns,
-            b_advantages,
-        )
-
-        # --- Logging và In kết quả ---
-        total_reward = b_rewards_np.sum()
-
-        score_history.append(total_reward)
-        avg_score = np.mean(score_history[-100:])
-        avg_score_history.append(avg_score)
-
-        if avg_score > best_avg_score:
-            best_avg_score = avg_score
-            ckpt_path = f"./model_a2c_test/best_a2c.pt"
-            print(f"Saving checkpoint to {ckpt_path}... ", flush=True)
-            torch.save(
-                {
-                    "episode": episode + 1,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": agent.optimizer.state_dict(),  # Lưu cả optimizer state
-                    "loss": loss,
-                },
-                ckpt_path,
+                f"[Episode {episode + 1:4d}/{n_episodes}] Steps = {step_cnt}, Loss = {loss:.2f}, ",
+                f"Actor Loss = {actor_loss:.2f}, Critic Loss = {critic_loss:.2f}, ",
+                f"Entropy = {entropy:.2f}, ",
+                f"Total Reward = {total_reward:.2f}, ",
+                f"Avg score(100) = {avg_score:.2f}",
             )
 
+            # Lưu vào TensorBoard
+            writer.add_scalar("Loss/Episode", loss, episode + 1)
+            writer.add_scalar("Loss/Actor Loss", actor_loss, episode + 1)
+            writer.add_scalar("Loss/Critic Loss", critic_loss, episode + 1)
+            writer.add_scalar("Performance/Entropy", entropy, episode + 1)
+            writer.add_scalar("Performance/Total Reward", total_reward, episode + 1)
+            writer.add_scalar("Performance/Episode Length", step_cnt, episode + 1)
+            writer.flush()
+
+            # Lưu checkpoint định kỳ
+            if (episode + 1) % 50 == 0:
+                ckpt_path = f"./model_a2c_test/a2c_checkpoint_{episode + 1:04d}.pt"
+                print(f"Saving checkpoint to {ckpt_path}... ", flush=True)
+                torch.save(
+                    {
+                        "episode": episode + 1,
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": agent.optimizer.state_dict(),  # Lưu cả optimizer state
+                        "loss": loss,
+                    },
+                    ckpt_path,
+                )
+                # Lưu video/gif nếu hàm play tồn tại
+                try:
+                    play(model, f"Train_episode_{episode + 1:04d}.gif")
+                except NameError:
+                    pass  # Bỏ qua nếu hàm play không tồn tại
+                print("Done!")
+    except KeyboardInterrupt:
+        print("Training interupted by user.")
+    finally:
+        writer.close()
+        plt.figure(figsize=(12, 6))
+        plt.plot(
+            np.arange(len(score_history)),
+            score_history,
+            label="Episode Score",
+            alpha=0.7,
+        )
+        plt.plot(
+            np.arange(len(avg_score_history)),
+            avg_score_history,
+            label="Avg Score (100 episodes)",
+            linewidth=2,
+            color="red",
+        )
+        plt.xlabel("Episode")
+        plt.ylabel("Score")
+        plt.title(f"Training Progress - A2C on CarRacing-v3")
+        plt.legend()
+        plt.grid(True)
+        plt.savefig(os.path.join("model_a2c_test", "a2c_training_plot.png"))
         print(
-            f"[Episode {episode + 1:4d}/{n_episodes}] Steps = {step_cnt}, Loss = {loss:.2f}, ",
-            f"Actor Loss = {actor_loss:.2f}, Critic Loss = {critic_loss:.2f}, ",
-            f"Entropy = {entropy:.2f}, ",
-            f"Total Reward = {total_reward:.2f}, ",
-            f"Avg score(100) = {avg_score:.2f}",
+            f"Training plot saved to {os.path.join("model_a2c_test", "a2c_training_plot.png")}"
         )
-
-        # Lưu vào TensorBoard
-        writer.add_scalar("Loss/Episode", loss, episode + 1)
-        writer.add_scalar("Loss/Actor Loss", actor_loss, episode + 1)
-        writer.add_scalar("Loss/Critic Loss", critic_loss, episode + 1)
-        writer.add_scalar("Performance/Entropy", entropy, episode + 1)
-        writer.add_scalar("Performance/Total Reward", total_reward, episode + 1)
-        writer.add_scalar("Performance/Episode Length", step_cnt, episode + 1)
-        writer.flush()
-
-        # Lưu checkpoint định kỳ
-        if (episode + 1) % 50 == 0:
-            ckpt_path = f"./model_a2c_test/a2c_checkpoint_{episode + 1:04d}.pt"
-            print(f"Saving checkpoint to {ckpt_path}... ", flush=True)
-            torch.save(
-                {
-                    "episode": episode + 1,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": agent.optimizer.state_dict(),  # Lưu cả optimizer state
-                    "loss": loss,
-                },
-                ckpt_path,
-            )
-            # Lưu video/gif nếu hàm play tồn tại
-            try:
-                play(model, f"Train_episode_{episode + 1:04d}.gif")
-            except NameError:
-                pass  # Bỏ qua nếu hàm play không tồn tại
-            print("Done!")
-
-    writer.close()
-    print("Training finished.")
+        print("Training finished.")
 
 
 def main():
@@ -257,20 +283,15 @@ def main():
     # -----------------------------
 
     # Bắt đầu huấn luyện
-    try:
-        train(
-            env,
-            model,
-            agent,
-            device,
-            n_episodes=3000,
-            discount_factor=0.99,
-            max_steps_per_episode=1000,
-        )
-    except KeyboardInterrupt:
-        print("\nTraining interrupted by user.")
-    finally:
-        env.close()  # Luôn đóng môi trường
+    train(
+        env,
+        model,
+        agent,
+        device,
+        n_episodes=3000,
+        discount_factor=0.99,
+        max_steps_per_episode=1000,
+    )
 
 
 if __name__ == "__main__":
