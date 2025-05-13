@@ -229,7 +229,7 @@ def main():
     try:
         # Sử dụng render_mode='rgb_array' nếu không cần hiển thị cửa sổ
         env_raw = gym.make(
-            "CarRacing-v3", domain_randomize=False, render_mode="rgb_array"
+            "CarRacing-v2", domain_randomize=False, render_mode="rgb_array"
         )
         env = EnvWrapper(env_raw, seed=seed)  # Giả sử EnvWrapper đã định nghĩa
     except Exception as e:

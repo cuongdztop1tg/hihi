@@ -24,7 +24,7 @@ def save_gif(frames, fname):
 
 def play(model, fname):
     env = EnvWrapper(
-        gym.make("CarRacing-v3", domain_randomize=False, render_mode="rgb_array")
+        gym.make("CarRacing-v2", domain_randomize=False, render_mode="rgb_array")
     )
 
     frames = []
