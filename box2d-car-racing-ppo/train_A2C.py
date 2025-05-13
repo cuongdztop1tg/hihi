@@ -43,13 +43,13 @@ def train(
         discount_factor: Hệ số chiết khấu gamma.
         max_steps_per_episode: Số bước tối đa cho mỗi episode.
     """
-    if not os.path.exists("./model_a2c_ver2"):  # Đổi tên thư mục để tránh ghi đè PPO
-        os.makedirs("./model_a2c_ver2")
-    if not os.path.exists("./plot_a2c_ver2"):
-        os.makedirs("./plot_a2c_ver2")
+    if not os.path.exists("./model_a2c_test"):  # Đổi tên thư mục để tránh ghi đè PPO
+        os.makedirs("./model_a2c_test")
+    if not os.path.exists("./plot_a2c_test"):
+        os.makedirs("./plot_a2c_test")
 
     # Sử dụng tên thư mục riêng cho A2C logs
-    writer = SummaryWriter(log_dir="./plot_a2c_ver2")
+    writer = SummaryWriter(log_dir="./plot_a2c_test")
 
     # Tính max_steps dựa trên frame skip nếu có, hoặc sử dụng giá trị cố định
     # max_steps = max_steps_per_episode // getattr(env, 'n_frames', 1) # Ước lượng nếu có n_frames
@@ -57,6 +57,10 @@ def train(
 
     print(f"Training on {device} using A2C...")
     print(f"Max steps per episode: {max_steps}")
+
+    score_history = []
+    avg_score_history = []
+    best_avg_score = -np.inf
 
     for episode in range(n_episodes):
         # --- Thu thập dữ liệu từ một episode (Rollout) ---
@@ -153,11 +157,31 @@ def train(
 
         # --- Logging và In kết quả ---
         total_reward = b_rewards_np.sum()
+
+        score_history.append(total_reward)
+        avg_score = np.mean(score_history[-100:])
+        avg_score_history.append(avg_score)
+
+        if avg_score > best_avg_score:
+            best_avg_score = avg_score
+            ckpt_path = f"./model_a2c_test/best_a2c.pt"
+            print(f"Saving checkpoint to {ckpt_path}... ", flush=True)
+            torch.save(
+                {
+                    "episode": episode + 1,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": agent.optimizer.state_dict(),  # Lưu cả optimizer state
+                    "loss": loss,
+                },
+                ckpt_path,
+            )
+
         print(
-            f"[Episode {episode + 1:4d}/{n_episodes}] Steps = {step_cnt}, Loss = {loss:.5f}, ",
-            f"Actor Loss = {actor_loss:.5f}, Critic Loss = {critic_loss:.5f}, ",
-            f"Entropy = {entropy:.5f}, ",
-            f"Total Reward = {total_reward:.2f}",  # Định dạng lại reward
+            f"[Episode {episode + 1:4d}/{n_episodes}] Steps = {step_cnt}, Loss = {loss:.2f}, ",
+            f"Actor Loss = {actor_loss:.2f}, Critic Loss = {critic_loss:.2f}, ",
+            f"Entropy = {entropy:.2f}, ",
+            f"Total Reward = {total_reward:.2f}, ",
+            f"Avg score(100) = {avg_score:.2f}",
         )
 
         # Lưu vào TensorBoard
@@ -170,9 +194,9 @@ def train(
         writer.flush()
 
         # Lưu checkpoint định kỳ
-        if (episode + 1) % 100 == 0:
-            ckpt_path = f"./model_a2c_ver2/a2c_checkpoint_{episode + 1:04d}.pt"
-            print(f"Saving checkpoint to {ckpt_path}... ", end="", flush=True)
+        if (episode + 1) % 50 == 0:
+            ckpt_path = f"./model_a2c_test/a2c_checkpoint_{episode + 1:04d}.pt"
+            print(f"Saving checkpoint to {ckpt_path}... ", flush=True)
             torch.save(
                 {
                     "episode": episode + 1,

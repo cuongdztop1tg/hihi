@@ -81,7 +81,7 @@ def main():
 
 def main():
     # --- Thiết lập cơ bản ---
-    model_dir = "/kaggle/working/hihi/model_a2c"  # <--- THAY ĐỔI 1: Đường dẫn thư mục checkpoint A2C
+    model_dir = "jerrykal githuub ppo/model_a2c"  # <--- THAY ĐỔI 1: Đường dẫn thư mục checkpoint A2C
     best_model_path = os.path.join(
         model_dir, "best_a2c_model.pt"
     )  # <--- THAY ĐỔI 1: Tên file model tốt nhất
@@ -125,7 +125,7 @@ def main():
         # if not fname.startswith("a2c_checkpoint_") or not fname.endswith(".pt"):
         #     continue
 
-        if fname != "best_a2c_model.pt":
+        if fname != "a2c_checkpoint_0600.pt":
             continue
 
         ckpt_path = os.path.join(model_dir, fname)

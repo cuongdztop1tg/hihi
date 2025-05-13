@@ -17,9 +17,9 @@ def fix_random_seeds(seed):
 
 
 def save_gif(frames, fname):
-    if not os.path.exists("./gif_a2c_ver2"):
-        os.makedirs("./gif_a2c_ver2")
-    imageio.mimwrite(f"./gif_a2c_ver2/{fname}", frames)
+    if not os.path.exists("./gif_a2c_test"):
+        os.makedirs("./gif_a2c_test")
+    imageio.mimwrite(f"./gif_a2c_test/{fname}", frames)
 
 
 def play(model, fname):
