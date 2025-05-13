@@ -81,7 +81,7 @@ def main():
 
 def main():
     # --- Thiết lập cơ bản ---
-    model_dir = "/kaggle/working/hihi/box2d-car-racing-ppo/model_a2c"  # <--- THAY ĐỔI 1: Đường dẫn thư mục checkpoint A2C
+    model_dir = "/kaggle/working/hihi/model_a2c"  # <--- THAY ĐỔI 1: Đường dẫn thư mục checkpoint A2C
     best_model_path = os.path.join(
         model_dir, "best_a2c_model.pt"
     )  # <--- THAY ĐỔI 1: Tên file model tốt nhất
